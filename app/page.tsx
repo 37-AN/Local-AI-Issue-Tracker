@@ -73,8 +73,29 @@ type SopDraft =
     }
   | { raw: string };
 
+type Role = "Admin" | "Engineer" | "Viewer";
+type AdminUserRow = { id: string; username: string; created_at: string; role: string };
+type ClientLogLevel = "debug" | "info" | "warn" | "error";
+
 function isRaw(v: AiSuggestion | SopDraft): v is { raw: string } {
   return typeof (v as { raw?: unknown })?.raw === "string";
+}
+
+function sendClientLog(level: ClientLogLevel, message: string, context?: unknown) {
+  try {
+    const payload = { level, message, context, ts: new Date().toISOString() };
+
+    // Avoid sendBeacon here: it commonly triggers ECONNRESET server noise on reload/HMR.
+    void fetch("/api/client-log", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      // don't keepalive; we prefer the request to be cancelled cleanly on refresh
+      keepalive: false,
+    }).catch(() => null);
+  } catch {
+    // ignore
+  }
 }
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -323,6 +344,179 @@ export default function Home() {
     | { state: "error"; message: string }
   >({ state: "idle" });
 
+  const [me, setMe] = useState<{ role: Role; userId: string | null; username: string | null } | null>(null);
+
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authForm, setAuthForm] = useState<{ username: string; password: string }>({ username: "", password: "" });
+  const [authStatus, setAuthStatus] = useState<
+    | { state: "idle" }
+    | { state: "working" }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
+
+  const isAdmin = me?.role === "Admin";
+  const canWrite = me?.role === "Admin" || me?.role === "Engineer";
+
+  async function refreshMe() {
+    try {
+      const res = await fetch("/api/auth/me", { method: "GET" });
+      const json: unknown = await res.json();
+      const roleRaw = (json as { role?: unknown })?.role;
+      const role: Role = roleRaw === "Admin" || roleRaw === "Engineer" || roleRaw === "Viewer" ? roleRaw : "Viewer";
+
+      const userId =
+        typeof (json as { userId?: unknown })?.userId === "string"
+          ? (json as { userId: string }).userId
+          : null;
+
+      const username =
+        typeof (json as { username?: unknown })?.username === "string"
+          ? (json as { username: string }).username
+          : null;
+
+      setMe({ role, userId, username });
+    } catch {
+      setMe({ role: "Viewer", userId: null, username: null });
+    }
+  }
+
+  useEffect(() => {
+    void refreshMe();
+  }, []);
+
+  async function loginOrRegister() {
+    setAuthStatus({ state: "working" });
+    try {
+      const url = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(authForm),
+      });
+
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg =
+          typeof (json as { error?: unknown })?.error === "string"
+            ? (json as { error: string }).error
+            : "Auth failed";
+        setAuthStatus({ state: "error", message: msg });
+        return;
+      }
+
+      setAuthStatus({ state: "idle" });
+      setAuthOpen(false);
+      setAuthForm({ username: "", password: "" });
+      await refreshMe();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Auth failed";
+      setAuthStatus({ state: "error", message: msg });
+    }
+  }
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+    await refreshMe();
+  }
+
+  // Admin user management
+  const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
+  const [adminUsersStatus, setAdminUsersStatus] = useState<
+    | { state: "idle" }
+    | { state: "loading" }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
+
+  const [newUser, setNewUser] = useState<{ username: string; password: string; role: Role }>({
+    username: "",
+    password: "",
+    role: "Viewer",
+  });
+  const [newUserStatus, setNewUserStatus] = useState<
+    | { state: "idle" }
+    | { state: "creating" }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
+
+  async function loadAdminUsers() {
+    setAdminUsersStatus({ state: "loading" });
+    try {
+      const res = await fetch("/api/admin/users", { method: "GET" });
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg =
+          typeof (json as { error?: unknown })?.error === "string"
+            ? (json as { error: string }).error
+            : "Failed to load users";
+        setAdminUsersStatus({ state: "error", message: msg });
+        return;
+      }
+      const users = Array.isArray((json as { users?: unknown })?.users)
+        ? ((json as { users: AdminUserRow[] }).users ?? [])
+        : [];
+      setAdminUsers(users);
+      setAdminUsersStatus({ state: "idle" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load users";
+      setAdminUsersStatus({ state: "error", message: msg });
+    }
+  }
+
+  async function createAdminUser() {
+    setNewUserStatus({ state: "creating" });
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(newUser),
+      });
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg =
+          typeof (json as { error?: unknown })?.error === "string"
+            ? (json as { error: string }).error
+            : "Failed to create user";
+        setNewUserStatus({ state: "error", message: msg });
+        return;
+      }
+      setNewUserStatus({ state: "idle" });
+      setNewUser({ username: "", password: "", role: "Viewer" });
+      await loadAdminUsers();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to create user";
+      setNewUserStatus({ state: "error", message: msg });
+    }
+  }
+
+  async function setUserRole(userId: string, role: Role) {
+    const res = await fetch("/api/admin/user-roles", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId, role }),
+    });
+
+    if (!res.ok) {
+      const json: unknown = await res.json().catch(() => ({}));
+      const msg =
+        typeof (json as { error?: unknown })?.error === "string"
+          ? (json as { error: string }).error
+          : "Failed to set role";
+      alert(msg);
+      return;
+    }
+
+    await loadAdminUsers();
+    await refreshMe();
+  }
+
+  useEffect(() => {
+    if (nav !== "dashboard") return;
+    if (!isAdmin) return;
+    void loadAdminUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav, isAdmin]);
+
   async function loadTickets() {
     setTicketsStatus({ state: "loading" });
 
@@ -477,7 +671,7 @@ export default function Home() {
     }
   }
 
-  async function setTicketStatus(ticketId: string, status: TicketStatus) {
+  async function updateTicketStatus2(ticketId: string, status: TicketStatus) {
     try {
       const res = await fetch(`/api/tickets/${ticketId}/status`, {
         method: "POST",
@@ -879,12 +1073,105 @@ export default function Home() {
             <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <div className="h-7 w-7 rounded-full bg-slate-200" />
               <div className="hidden sm:block">
-                <div className="text-xs font-medium text-slate-900">Local</div>
-                <div className="text-[11px] text-slate-500">No telemetry</div>
+                <div className="text-xs font-medium text-slate-900">
+                  {me?.username ? `@${me.username}` : "Not signed in"}
+                </div>
+                <div className="text-[11px] text-slate-500">Role: {me?.role ?? "Viewer"}</div>
+              </div>
+            </div>
+
+            {me?.userId ? (
+              <button
+                type="button"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+                onClick={logout}
+              >
+                Logout
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800"
+                onClick={() => {
+                  setAuthOpen(true);
+                  setAuthStatus({ state: "idle" });
+                }}
+              >
+                Login
+              </button>
+            )}
+          </div>
+        </header>
+
+        {authOpen ? (
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {authMode === "login" ? "Login" : "Register (bootstrap/admin-only)"}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  First registered user becomes <span className="font-mono">Admin</span>.
+                  After that, only Admin can create users.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+                onClick={() => setAuthOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs font-medium text-slate-600">Username</label>
+                <input
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                  value={authForm.username}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, username: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-600">Password</label>
+                <input
+                  type="password"
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                  value={authForm.password}
+                  onChange={(e) => setAuthForm((p) => ({ ...p, password: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-slate-600">
+                {authStatus.state === "error" ? authStatus.message : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+                  onClick={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}
+                >
+                  Switch to {authMode === "login" ? "Register" : "Login"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={authStatus.state === "working" || !authForm.username.trim() || !authForm.password}
+                  onClick={loginOrRegister}
+                >
+                  {authStatus.state === "working"
+                    ? "Working…"
+                    : authMode === "login"
+                    ? "Login"
+                    : "Register"}
+                </button>
               </div>
             </div>
           </div>
-        </header>
+        ) : null}
 
         {/* Shell */}
         <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[260px_1fr]">
@@ -1694,6 +1981,108 @@ export default function Home() {
                     <span className="font-mono">phi3:mini</span>). No cloud calls.
                   </div>
                 </Panel>
+
+                <Panel
+                  title="Admin: Users & roles"
+                  subtitle="Local-only user management (Admin only)."
+                  right={isAdmin ? <Badge tone="success">Admin</Badge> : <Badge tone="neutral">Restricted</Badge>}
+                >
+                  {!isAdmin ? (
+                    <EmptyState title="Admin access required" description="Sign in as an Admin to manage users and roles." />
+                  ) : (
+                    <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="text-xs font-semibold text-slate-900">Create user</div>
+
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <label className="text-xs font-medium text-slate-600">Username</label>
+                            <input
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                              value={newUser.username}
+                              onChange={(e) => setNewUser((p) => ({ ...p, username: e.target.value }))}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-slate-600">Password</label>
+                            <input
+                              type="password"
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                              value={newUser.password}
+                              onChange={(e) => setNewUser((p) => ({ ...p, password: e.target.value }))}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-slate-600">Role</label>
+                            <select
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                              value={newUser.role}
+                              onChange={(e) => setNewUser((p) => ({ ...p, role: e.target.value as Role }))}
+                            >
+                              <option value="Viewer">Viewer</option>
+                              <option value="Engineer">Engineer</option>
+                              <option value="Admin">Admin</option>
+                            </select>
+                          </div>
+                          <div className="flex items-end justify-end">
+                            <button
+                              type="button"
+                              className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={newUserStatus.state === "creating" || !newUser.username.trim() || newUser.password.length < 8}
+                              onClick={createAdminUser}
+                            >
+                              {newUserStatus.state === "creating" ? "Creating…" : "Create"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {newUserStatus.state === "error" ? (
+                          <div className="mt-3 text-xs text-red-700">{newUserStatus.message}</div>
+                        ) : null}
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                          <div className="text-xs font-semibold text-slate-900">Users</div>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+                            onClick={loadAdminUsers}
+                          >
+                            Refresh
+                          </button>
+                        </div>
+
+                        {adminUsersStatus.state === "error" ? (
+                          <div className="p-4 text-sm text-slate-600">{adminUsersStatus.message}</div>
+                        ) : adminUsers.length === 0 ? (
+                          <div className="p-4 text-sm text-slate-600">No users found.</div>
+                        ) : (
+                          <ul className="divide-y divide-slate-200">
+                            {adminUsers.map((u) => (
+                              <li key={u.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-slate-900">@{u.username}</div>
+                                  <div className="mt-1 text-xs text-slate-500 font-mono">{u.id.slice(0, 8)}</div>
+                                </div>
+
+                                <select
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                                  value={(u.role as Role) ?? "Viewer"}
+                                  onChange={(e) => void setUserRole(u.id, e.target.value as Role)}
+                                >
+                                  <option value="Viewer">Viewer</option>
+                                  <option value="Engineer">Engineer</option>
+                                  <option value="Admin">Admin</option>
+                                </select>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Panel>
               </>
             ) : null}
 
@@ -1710,6 +2099,7 @@ export default function Home() {
                         setCreateOpen(true);
                         setCreateStatus({ state: "idle" });
                       }}
+                      disabled={!canWrite}
                     >
                       New ticket
                     </button>
@@ -1962,6 +2352,7 @@ export default function Home() {
                                 type="button"
                                 className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800"
                                 onClick={() => setCreateOpen(true)}
+                                disabled={!canWrite}
                               >
                                 New ticket
                               </button>
@@ -2060,6 +2451,7 @@ export default function Home() {
                                   onChange={(e) =>
                                     setEditTicket((p) => (p ? { ...p, title: e.target.value } : p))
                                   }
+                                  disabled={!canWrite}
                                 />
                               </div>
 
@@ -2076,6 +2468,7 @@ export default function Home() {
                                         p ? { ...p, type: e.target.value as TicketType } : p
                                       )
                                     }
+                                    disabled={!canWrite}
                                   >
                                     <option value="Incident">Incident</option>
                                     <option value="Service Request">Service Request</option>
@@ -2097,6 +2490,7 @@ export default function Home() {
                                           : p
                                       )
                                     }
+                                    disabled={!canWrite}
                                   >
                                     <option value="P1">P1</option>
                                     <option value="P2">P2</option>
@@ -2118,6 +2512,7 @@ export default function Home() {
                                       p ? { ...p, service: e.target.value } : p
                                     )
                                   }
+                                  disabled={!canWrite}
                                 />
                               </div>
 
@@ -2131,6 +2526,7 @@ export default function Home() {
                                   onChange={(e) =>
                                     setEditTicket((p) => (p ? { ...p, site: e.target.value } : p))
                                   }
+                                  disabled={!canWrite}
                                 />
                               </div>
                             </div>
@@ -2147,6 +2543,7 @@ export default function Home() {
                                     p ? { ...p, description: e.target.value } : p
                                   )
                                 }
+                                disabled={!canWrite}
                               />
                             </div>
 
@@ -2162,6 +2559,7 @@ export default function Home() {
                                     p ? { ...p, resolutionNotes: e.target.value } : p
                                   )
                                 }
+                                disabled={!canWrite}
                               />
                             </div>
 
@@ -2179,7 +2577,7 @@ export default function Home() {
                                   type="button"
                                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
                                   onClick={() => void saveTicketEdits(selectedTicket.id)}
-                                  disabled={saveStatus.state === "saving"}
+                                  disabled={saveStatus.state === "saving" || !canWrite}
                                 >
                                   {saveStatus.state === "saving" ? "Saving…" : "Save"}
                                 </button>
@@ -2187,7 +2585,8 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
-                                  onClick={() => void setTicketStatus(selectedTicket.id, "In Progress")}
+                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "In Progress")}
+                                  disabled={!canWrite}
                                 >
                                   Set In Progress
                                 </button>
@@ -2195,7 +2594,8 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800"
-                                  onClick={() => void setTicketStatus(selectedTicket.id, "Resolved")}
+                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "Resolved")}
+                                  disabled={!canWrite}
                                 >
                                   Resolve (stores to RAG)
                                 </button>
@@ -2203,7 +2603,8 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
-                                  onClick={() => void setTicketStatus(selectedTicket.id, "Closed")}
+                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "Closed")}
+                                  disabled={!canWrite}
                                 >
                                   Close
                                 </button>
@@ -2454,6 +2855,7 @@ export default function Home() {
                       onClick={() => {
                         alert("SOP generation and versioning will be added in a later step.");
                       }}
+                      disabled={!canWrite}
                     >
                       New SOP
                     </button>
@@ -2502,6 +2904,7 @@ export default function Home() {
                                   "SOP generation will be implemented in a later step."
                                 );
                               }}
+                              disabled={!canWrite}
                             >
                               Enable SOP generation
                             </button>

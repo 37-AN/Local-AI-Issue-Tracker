@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  canWrite,
+  deny,
+  getActorContext,
+  getClientIp,
+  writeAuditLog,
+} from "@/lib/rbac";
 
 type TicketType = "Incident" | "Service Request" | "Problem" | "Change";
 type TicketStatus = "Open" | "In Progress" | "Resolved" | "Closed";
@@ -84,6 +91,11 @@ type CreateBody = {
 
 export async function POST(request: Request) {
   const supabase = await createClient();
+  const actor = await getActorContext(supabase);
+
+  if (!canWrite(actor.role)) {
+    return NextResponse.json(deny("Engineer or Admin role required"), { status: 403 });
+  }
 
   let body: CreateBody;
   try {
@@ -121,6 +133,7 @@ export async function POST(request: Request) {
       service,
       site,
       topics,
+      created_by: actor.userId,
     })
     .select("*")
     .single();
@@ -129,6 +142,7 @@ export async function POST(request: Request) {
 
   await supabase.from("ticket_events").insert({
     ticket_id: inserted.id,
+    actor_id: actor.userId,
     event_type: "created",
     payload: {
       title: inserted.title,
@@ -137,6 +151,18 @@ export async function POST(request: Request) {
       status: inserted.status,
       topics: inserted.topics,
     },
+  });
+
+  await writeAuditLog(supabase, {
+    actor_id: actor.userId,
+    actor_role: actor.role,
+    action: "tickets.create",
+    entity_type: "ticket",
+    entity_id: inserted.id,
+    before: null,
+    after: inserted,
+    ip: getClientIp(request),
+    user_agent: request.headers.get("user-agent"),
   });
 
   return NextResponse.json({ ok: true, ticket: inserted });

@@ -13,3 +13,16 @@ export async function GET() {
     role: actor.role,
   });
 }
+
+export async function POST(request: Request) {
+  const supabase = await createClient();
+  const actor = await getActorContext(supabase);
+
+  // ... existing code ...
+
+  console.log(
+    `[admin.user_roles] set role requester=${actor.userId ?? "-"} target=${userId} role=${role}`
+  );
+
+  // ... existing code ...
+}

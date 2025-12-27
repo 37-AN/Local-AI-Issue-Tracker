@@ -1,10 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Tables } from "@/database.types";
+import { getSession } from "@/lib/session";
 
 export type Role = "Admin" | "Engineer" | "Viewer";
 
 export type ActorContext = {
   userId: string | null;
+  username: string | null;
   role: Role;
 };
 
@@ -16,12 +18,11 @@ function normalizeRole(role: string | null | undefined): Role {
 export async function getActorContext(
   supabase: SupabaseClient<Database>
 ): Promise<ActorContext> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await getSession();
+  const userId = session.userId ?? null;
+  const username = session.username ?? null;
 
-  const userId = user?.id ?? null;
-  if (!userId) return { userId: null, role: "Viewer" };
+  if (!userId) return { userId: null, username: null, role: "Viewer" };
 
   const { data, error } = await supabase
     .from("user_roles")
@@ -29,8 +30,8 @@ export async function getActorContext(
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (error) return { userId, role: "Viewer" };
-  return { userId, role: normalizeRole(data?.role ?? null) };
+  if (error) return { userId, username, role: "Viewer" };
+  return { userId, username, role: normalizeRole(data?.role ?? null) };
 }
 
 export function canWrite(role: Role): boolean {
@@ -58,7 +59,6 @@ export async function writeAuditLog(
   supabase: SupabaseClient<Database>,
   entry: Omit<Tables<"audit_logs">, "id" | "created_at">
 ) {
-  // best-effort; do not block the request if auditing fails
   try {
     await supabase.from("audit_logs").insert(entry);
   } catch {

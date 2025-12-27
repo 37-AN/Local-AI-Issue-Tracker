@@ -56,6 +56,30 @@ export type Database = {
         }
         Relationships: []
       }
+      local_users: {
+        Row: {
+          created_at: string
+          id: string
+          password_hash: string
+          password_salt: string
+          username: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          password_hash: string
+          password_salt: string
+          username: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          password_hash?: string
+          password_salt?: string
+          username?: string
+        }
+        Relationships: []
+      }
       rag_items: {
         Row: {
           chunk_index: number
@@ -215,7 +239,15 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "user_roles_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "local_users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
