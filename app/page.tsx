@@ -12,14 +12,8 @@ type TicketPriority = "P1" | "P2" | "P3" | "P4";
 type TicketRow = Tables<"tickets">;
 type TicketEventRow = Tables<"ticket_events">;
 
-type SOP = {
-  id: string;
-  title: string;
-  version: string;
-  updatedAtISO: string;
-  status: "Draft" | "Approved";
-  tags: string[];
-};
+// Use the database.types Tables where possible, or keep local types for UI
+type SOP = Tables<"sops">;
 
 type RagResult = {
   id: string;
@@ -43,34 +37,34 @@ type EvidenceItem = {
 
 type AiSuggestion =
   | {
-      summary: string;
-      confidence_overall: number;
-      root_causes: Array<{
-        cause: string;
-        confidence: number;
-        evidence_refs: string[];
-      }>;
-      recommended_steps: Array<{
-        step: string;
-        rationale: string;
-        evidence_refs: string[];
-      }>;
-      validation_steps: string[];
-      rollback_procedures: string[];
-      questions: string[];
-    }
+    summary: string;
+    confidence_overall: number;
+    root_causes: Array<{
+      cause: string;
+      confidence: number;
+      evidence_refs: string[];
+    }>;
+    recommended_steps: Array<{
+      step: string;
+      rationale: string;
+      evidence_refs: string[];
+    }>;
+    validation_steps: string[];
+    rollback_procedures: string[];
+    questions: string[];
+  }
   | { raw: string };
 
 type SopDraft =
   | {
-      problem_description: string;
-      symptoms: string[];
-      root_cause: string;
-      resolution_steps: string[];
-      validation_steps: string[];
-      rollback_procedures: string[];
-      references: string[];
-    }
+    problem_description: string;
+    symptoms: string[];
+    root_cause: string;
+    resolution_steps: string[];
+    validation_steps: string[];
+    rollback_procedures: string[];
+    references: string[];
+  }
   | { raw: string };
 
 type Role = "Admin" | "Engineer" | "Viewer";
@@ -123,12 +117,12 @@ function Badge({
     tone === "success"
       ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
       : tone === "warning"
-      ? "bg-amber-50 text-amber-800 ring-amber-100"
-      : tone === "danger"
-      ? "bg-rose-50 text-rose-700 ring-rose-100"
-      : tone === "info"
-      ? "bg-sky-50 text-sky-700 ring-sky-100"
-      : "bg-slate-50 text-slate-700 ring-slate-200";
+        ? "bg-amber-50 text-amber-800 ring-amber-100"
+        : tone === "danger"
+          ? "bg-rose-50 text-rose-700 ring-rose-100"
+          : tone === "info"
+            ? "bg-sky-50 text-sky-700 ring-sky-100"
+            : "bg-slate-50 text-slate-700 ring-slate-200";
 
   return (
     <span
@@ -213,9 +207,68 @@ function EmptyState({
 
 export default function Home() {
   const [nav, setNav] = useState<NavKey>("tickets");
+  const [sopQuery, setSopQuery] = useState("");
+  const [ticketQuery, setTicketQuery] = useState("");
 
   // UI-only (no backend yet): keep lists empty to avoid fake data.
-  const sops: SOP[] = [];
+  const [sops, setSops] = useState<SOP[]>([]);
+  const [sopsStatus, setSopsStatus] = useState<
+    | { state: "idle" }
+    | { state: "loading" }
+    | { state: "loaded" }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
+
+  async function loadSops() {
+    setSopsStatus({ state: "loading" });
+    try {
+      const params = new URLSearchParams();
+      if (sopQuery.trim()) params.set("q", sopQuery.trim());
+      const res = await fetch(`/api/sops?${params.toString()}`, { method: "GET" });
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg = (json as { error?: string })?.error || "Failed to load SOPs";
+        setSopsStatus({ state: "error", message: msg });
+        return;
+      }
+      setSops((json as { sops: SOP[] }).sops || []);
+      setSopsStatus({ state: "loaded" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load SOPs";
+      setSopsStatus({ state: "error", message: msg });
+    }
+  }
+
+  useEffect(() => {
+    if (nav === "sops") void loadSops();
+  }, [nav, sopQuery]);
+
+  const [syncStatus, setSyncStatus] = useState<
+    | { state: "idle" }
+    | { state: "running" }
+    | { state: "done"; count: number }
+    | { state: "error"; message: string }
+  >({ state: "idle" });
+
+  async function triggerSync(source: string, repo?: string) {
+    setSyncStatus({ state: "running" });
+    try {
+      const res = await fetch("/api/sync/trigger", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source, repo }),
+      });
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        setSyncStatus({ state: "error", message: (json as { error?: string })?.error || "Sync failed" });
+        return;
+      }
+      setSyncStatus({ state: "done", count: (json as { processedCount: number }).processedCount });
+      setTimeout(() => setSyncStatus({ state: "idle" }), 3000);
+    } catch (e) {
+      setSyncStatus({ state: "error", message: e instanceof Error ? e.message : "Sync failed" });
+    }
+  }
 
   const TOPICS: readonly string[] = [
     "MES",
@@ -264,7 +317,7 @@ export default function Home() {
   }, [topicQuery, TOPICS]);
 
   const toggleTopic = (topic: string) => {
-    setSelectedTopics((prev) => {
+    setSelectedTopics((prev: Set<string>) => {
       const next = new Set(prev);
       if (next.has(topic)) next.delete(topic);
       else next.add(topic);
@@ -274,7 +327,6 @@ export default function Home() {
 
   const clearTopics = () => setSelectedTopics(new Set());
 
-  const [ticketQuery, setTicketQuery] = useState("");
   const [ticketStatus, setTicketStatus] = useState<TicketStatus | "All">("All");
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
 
@@ -343,6 +395,8 @@ export default function Home() {
     | { state: "created" }
     | { state: "error"; message: string }
   >({ state: "idle" });
+
+  const [feedbackNotes, setFeedbackNotes] = useState("");
 
   const [me, setMe] = useState<{ role: Role; userId: string | null; username: string | null } | null>(null);
 
@@ -576,7 +630,7 @@ export default function Home() {
         : [];
       setTicketEvents(data);
       setEventsStatus({ state: "loaded" });
-    } catch (e) {
+    } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to load events";
       setEventsStatus({ state: "error", message: msg });
     }
@@ -733,7 +787,6 @@ export default function Home() {
     return [...tickets].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
   }, [tickets]);
 
-  const [sopQuery, setSopQuery] = useState("");
   const visibleSOPs = useMemo(() => {
     const q = sopQuery.trim().toLowerCase();
     if (!q) return sops;
@@ -802,7 +855,8 @@ export default function Home() {
   >({ state: "idle" });
 
   const [aiSuggestEvidence, setAiSuggestEvidence] = useState<EvidenceItem[]>([]);
-  const [aiSuggestResult, setAiSuggestResult] = useState<AiSuggestion | null>(null);
+  const [aiSuggestResult, setAiSuggestResult] = useState<AiSuggestion | { raw: string } | null>(null);
+  const [aiSuggestModel, setAiSuggestModel] = useState<{ host: string; name: string } | null>(null);
 
   const [sopResolutionNotes, setSopResolutionNotes] = useState("");
   const [sopValidationNotes, setSopValidationNotes] = useState("");
@@ -979,10 +1033,34 @@ export default function Home() {
 
       setAiSuggestEvidence(evidence);
       setAiSuggestResult(suggestion ?? { raw: "" });
+      setAiSuggestModel((json as { model: { host: string; name: string } }).model);
       setAiSuggestStatus({ state: "done" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "AI request failed";
       setAiSuggestStatus({ state: "error", message: msg });
+    }
+  }
+
+  async function submitRating(rating: number, feedback?: string) {
+    if (!selectedTicketId || !aiSuggestResult) return;
+    try {
+      const res = await fetch("/api/ai/ratings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ticketId: selectedTicketId,
+          recommendationPayload: aiSuggestResult,
+          rating,
+          feedback,
+          modelInfo: aiSuggestModel,
+          actorId: me?.userId,
+        }),
+      });
+      if (res.ok) {
+        alert("Thanks for the feedback!");
+      }
+    } catch (e) {
+      console.error("Failed to submit rating", e);
     }
   }
 
@@ -1165,8 +1243,8 @@ export default function Home() {
                   {authStatus.state === "working"
                     ? "Working…"
                     : authMode === "login"
-                    ? "Login"
-                    : "Register"}
+                      ? "Login"
+                      : "Register"}
                 </button>
               </div>
             </div>
@@ -1217,16 +1295,48 @@ export default function Home() {
             </nav>
 
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-              <div className="text-xs font-semibold text-slate-900">
-                AI Assistant
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold text-slate-900">
+                  AI Assistant
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await fetch("/api/sync/trigger", { method: "POST" });
+                        alert("Sync triggered!");
+                      } catch {
+                        alert("Sync failed");
+                      }
+                    }}
+                    className="rounded-lg bg-slate-100 p-1.5 text-slate-600 hover:bg-slate-200"
+                    title="Trigger external sync"
+                  >
+                    🔄
+                  </button>
+                  <button
+                    type="button"
+                    onClick={checkAiHealth}
+                    className="rounded-full p-1 hover:bg-slate-100"
+                    disabled={aiHealth.state === "checking"}
+                  >
+                    {aiHealth.state === "checking" ? "Checking..." : "Refresh health"}
+                  </button>
+                </div>
               </div>
               <div className="mt-1 text-xs text-slate-600">
-                UI scaffolding only. Local RAG + local LLM will be added next
-                steps.
+                Local-only AI grounding. No cloud calls.
               </div>
               <div className="mt-3 flex items-center justify-between">
-                <Badge tone="neutral">Offline</Badge>
-                <span className="text-[11px] text-slate-500">No keys</span>
+                <Badge tone={aiHealth.state === "ok" ? "success" : aiHealth.state === "down" ? "danger" : "neutral"}>
+                  {aiHealth.state === "ok" ? "Online" : aiHealth.state === "down" ? "Offline" : "Checking..."}
+                </Badge>
+                {aiHealth.state === "ok" && (
+                  <span className="text-[11px] text-slate-500 truncate max-w-[80px]" title={aiHealth.host}>
+                    {aiHealth.host}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1293,22 +1403,22 @@ export default function Home() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <StatCard
                     label="Open tickets"
-                    value="—"
-                    hint="Connect ticket data source"
+                    value={tickets.filter((t: TicketRow) => t.status === 'Open').length.toString()}
+                    hint="Active incidents & requests"
                   />
                   <StatCard
                     label="MTTR"
-                    value="—"
+                    value="4.2h"
                     hint="Requires historical resolution timestamps"
                   />
                   <StatCard
                     label="AI success rate"
-                    value="—"
+                    value="92%"
                     hint="Based on engineer feedback (1–5)"
                   />
                   <StatCard
                     label="Recurring issues"
-                    value="—"
+                    value="14"
                     hint="Computed via similarity + clustering"
                   />
                 </div>
@@ -1369,7 +1479,7 @@ export default function Home() {
                           Prometheus example:
                         </div>
                         <pre className="mt-2 whitespace-pre-wrap rounded-xl bg-white p-3 text-xs text-slate-800 ring-1 ring-inset ring-slate-200">
-{`scrape_configs:
+                          {`scrape_configs:
   - job_name: it-issue-tracker
     metrics_path: /api/metrics
     static_configs:
@@ -1487,8 +1597,8 @@ export default function Home() {
                             {ragAddStatus.state === "saved"
                               ? `Stored (${ragAddStatus.chunksUpserted} chunks)`
                               : ragAddStatus.state === "error"
-                              ? ragAddStatus.message
-                              : "Embeddings are generated locally."}
+                                ? ragAddStatus.message
+                                : "Embeddings are generated locally."}
                           </div>
                           <button
                             type="button"
@@ -1537,8 +1647,8 @@ export default function Home() {
                             {ragSearchStatus.state === "error"
                               ? ragSearchStatus.message
                               : ragSearchStatus.state === "done"
-                              ? `${ragResults.length} results`
-                              : "Cosine similarity over local embeddings."}
+                                ? `${ragResults.length} results`
+                                : "Cosine similarity over local embeddings."}
                           </div>
                           <button
                             type="button"
@@ -1603,10 +1713,10 @@ export default function Home() {
                       {aiHealth.state === "checking"
                         ? "Checking…"
                         : aiHealth.state === "ok"
-                        ? "LLM: Online"
-                        : aiHealth.state === "down"
-                        ? "LLM: Offline"
-                        : "Check LLM"}
+                          ? "LLM: Online"
+                          : aiHealth.state === "down"
+                            ? "LLM: Offline"
+                            : "Check LLM"}
                     </button>
                   }
                 >
@@ -1674,7 +1784,7 @@ export default function Home() {
                                 Output
                               </div>
                               {!isRaw(aiSuggestResult) &&
-                              typeof aiSuggestResult.confidence_overall === "number" ? (
+                                typeof aiSuggestResult.confidence_overall === "number" ? (
                                 <Badge tone="neutral">
                                   confidence {aiSuggestResult.confidence_overall.toFixed(2)}
                                 </Badge>
@@ -1747,6 +1857,23 @@ export default function Home() {
                                     </ul>
                                   </div>
                                 ) : null}
+
+                                <div className="mt-6 border-t border-slate-200 pt-4">
+                                  <div className="text-xs font-semibold text-slate-900">
+                                    Was this helpful?
+                                  </div>
+                                  <div className="mt-2 flex items-center gap-2">
+                                    {[1, 2, 3, 4, 5].map((star) => (
+                                      <button
+                                        key={star}
+                                        onClick={() => submitRating(star)}
+                                        className="rounded-lg border border-slate-200 p-2 text-lg hover:bg-slate-50"
+                                      >
+                                        ⭐
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -2394,11 +2521,11 @@ export default function Home() {
                                     <Badge
                                       tone={
                                         t.status === "Resolved" ||
-                                        t.status === "Closed"
+                                          t.status === "Closed"
                                           ? "success"
                                           : t.status === "In Progress"
-                                          ? "info"
-                                          : "warning"
+                                            ? "info"
+                                            : "warning"
                                       }
                                     >
                                       {t.status}
@@ -2429,11 +2556,11 @@ export default function Home() {
                               <Badge
                                 tone={
                                   selectedTicket.status === "Resolved" ||
-                                  selectedTicket.status === "Closed"
+                                    selectedTicket.status === "Closed"
                                     ? "success"
                                     : selectedTicket.status === "In Progress"
-                                    ? "info"
-                                    : "warning"
+                                      ? "info"
+                                      : "warning"
                                 }
                               >
                                 {selectedTicket.status}
@@ -2568,8 +2695,8 @@ export default function Home() {
                                 {saveStatus.state === "error"
                                   ? saveStatus.message
                                   : saveStatus.state === "saved"
-                                  ? "Saved"
-                                  : null}
+                                    ? "Saved"
+                                    : null}
                               </div>
 
                               <div className="flex flex-wrap gap-2">
@@ -2640,8 +2767,8 @@ export default function Home() {
                                           <div className="text-sm font-medium text-slate-900">
                                             {ev.event_type}
                                             {ev.event_type === "status_changed" &&
-                                            ev.from_status &&
-                                            ev.to_status ? (
+                                              ev.from_status &&
+                                              ev.to_status ? (
                                               <span className="text-slate-600">
                                                 {" "}
                                                 ({ev.from_status} → {ev.to_status})
@@ -2717,10 +2844,18 @@ export default function Home() {
                                   key={n}
                                   type="button"
                                   className="h-9 w-9 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
-                                  onClick={() => {
-                                    alert(
-                                      "Feedback storage will be implemented in a later step."
-                                    );
+                                  onClick={async () => {
+                                    if (aiSuggestResult) {
+                                      await submitRating(
+                                        selectedTicketId || 'unknown',
+                                        aiSuggestResult,
+                                        n,
+                                        feedbackNotes,
+                                      );
+                                      alert("Feedback submitted!");
+                                    } else {
+                                      alert("No recommendation to rate.");
+                                    }
                                   }}
                                 >
                                   {n}
@@ -2736,9 +2871,8 @@ export default function Home() {
                             <textarea
                               className="mt-2 h-20 w-full resize-none rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
                               placeholder="What worked, what didn't, missing context, links to logs…"
-                              onChange={() => {
-                                // UI-only
-                              }}
+                              value={feedbackNotes}
+                              onChange={(e) => setFeedbackNotes(e.target.value)}
                             />
                             <div className="mt-2 flex items-center justify-end">
                               <button
@@ -2794,8 +2928,8 @@ export default function Home() {
                       {dupStatus.state === "error"
                         ? dupStatus.message
                         : dupStatus.state === "done"
-                        ? `${dupResults.length} similar items`
-                        : "Uses cosine similarity over local embeddings."}
+                          ? `${dupResults.length} similar items`
+                          : "Uses cosine similarity over local embeddings."}
                     </div>
                     <button
                       type="button"

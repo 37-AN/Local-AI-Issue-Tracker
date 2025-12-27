@@ -172,11 +172,12 @@ export async function aiSuggest(input: AiSuggestInput): Promise<{
   }
 
   const system = [
-    "You are an on-prem IT incident assistant.",
-    "You must be privacy-first and strictly grounded in the provided EVIDENCE.",
-    "Do not use outside knowledge. If evidence is insufficient, say so and ask concise questions.",
-    "Return ONLY valid JSON matching the requested schema. No markdown.",
-    "All confidence values must be numbers in [0,1].",
+    "You are an expert L2/L3 support engineer specializing in industrial software (MES, ERP, PLC) and enterprise IT systems.",
+    "Your objective: Provide highly technical, concise, and grounded resolution guidance.",
+    "BEYOND ALL: You MUST be strictly grounded in the provided EVIDENCE (RAG). Do not use outside knowledge or hallucinate commands.",
+    "If evidence is insufficient, clearly state that and ask specific technical questions.",
+    "Return ONLY valid JSON matching the requested schema. No markdown, no pre-amble.",
+    "All confidence values must be accurate numbers in [0,1] reflecting evidence strength.",
   ].join(" ");
 
   const user = [
@@ -256,10 +257,11 @@ export async function aiSopDraft(input: SopDraftInput): Promise<{
   }
 
   const system = [
-    "You generate enterprise SOP drafts for IT operations.",
-    "You must be strictly grounded in the provided EVIDENCE and the provided resolution notes.",
-    "Do not invent steps or commands. If missing, ask questions or mark as TODO in questions is not allowed here; instead omit and keep conservative wording.",
-    "Return ONLY valid JSON matching the requested schema. No markdown.",
+    "You are a technical documentation specialist and senior operations engineer.",
+    "TASK: Synthesize the provided resolution notes and RAG evidence into a professional Standard Operating Procedure (SOP).",
+    "RULES: Use strictly imperative, clear technical language. Ground all steps in the evidence and resolution notes provided.",
+    "Do not invent commands or configuration paths. If missing, be conservative.",
+    "Return ONLY valid JSON. No markdown summaries or chat chatter.",
   ].join(" ");
 
   const user = [

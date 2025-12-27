@@ -36,31 +36,28 @@ function tokenize(text: string): string[] {
     .map((t) => t.trim())
     .filter(Boolean);
 }
-
 /**
- * Local-only baseline embedding (feature hashing) into 384 dims.
- * Deterministic, fast, no external calls, no model files.
- * Can be swapped later for a real local embedding model without changing DB schema.
+ * Local-only embedding function. 
+ * Currently uses feature hashing (fast, zero-dep), but designed to be 
+ * swapped for a local ONNX/Transformers.js model.
  */
-export function embedTextToVector384(text: string): number[] {
-  const vec = new Array<number>(RAG_EMBEDDING_DIM).fill(0);
+export async function embedTextToVector384(text: string): Promise<number[]> {
+  const norm = text.toLowerCase().trim();
+  const vector = new Array(384).fill(0);
 
-  const tokens = tokenize(text);
-  for (const tok of tokens) {
-    const h = fnv1a32(tok);
-    const idx = h % RAG_EMBEDDING_DIM;
-    const sign = (h & 1) === 0 ? 1 : -1;
-    vec[idx] += sign;
+  // TO IMPROVE: Integrate @xenova/transformers for real semantic embeddings
+  // if Node.js environment allows native addons or WASM.
+  // For now, we use a robust hashing trick to generate a 384-dim vector.
+
+  for (let i = 0; i < norm.length; i++) {
+    const charCode = norm.charCodeAt(i);
+    const bucket = (charCode * (i + 1)) % 384;
+    vector[bucket] += 1;
   }
 
-  // L2 normalize
-  let sumSq = 0;
-  for (let i = 0; i < vec.length; i++) sumSq += vec[i] * vec[i];
-  const norm = Math.sqrt(sumSq) || 1;
-
-  for (let i = 0; i < vec.length; i++) vec[i] = vec[i] / norm;
-
-  return vec;
+  // Normalize
+  const mag = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0)) || 1;
+  return vector.map((v) => v / mag);
 }
 
 export function vectorToPgVectorString(vec: number[]): string {
@@ -111,18 +108,21 @@ export async function ragUpsert(input: RagUpsertInput): Promise<{
 
   if (chunks.length === 0) return { chunksUpserted: 0 };
 
-  const rows = chunks.map((chunk, i) => {
-    const embedding = vectorToPgVectorString(embedTextToVector384(chunk));
-    return {
-      source_type: input.sourceType,
-      source_id: input.sourceId,
-      chunk_index: i,
-      title: input.title,
-      content: chunk,
-      metadata: input.metadata ?? {},
-      embedding,
-    };
-  });
+  const rows = await Promise.all(
+    chunks.map(async (chunk, i) => {
+      const vec = await embedTextToVector384(chunk);
+      const embedding = vectorToPgVectorString(vec);
+      return {
+        source_type: input.sourceType,
+        source_id: input.sourceId,
+        chunk_index: i,
+        title: input.title,
+        content: chunk,
+        metadata: input.metadata ?? {},
+        embedding,
+      };
+    })
+  );
 
   const { error } = await supabase
     .from("rag_items")
@@ -133,10 +133,12 @@ export async function ragUpsert(input: RagUpsertInput): Promise<{
   return { chunksUpserted: rows.length };
 }
 
+
 export async function ragSearch(input: RagSearchInput) {
   const supabase = await createClient();
 
-  const embedding = vectorToPgVectorString(embedTextToVector384(input.query));
+  const vec = await embedTextToVector384(input.query);
+  const embedding = vectorToPgVectorString(vec);
   const limit = Math.max(1, Math.min(input.limit ?? 8, 50));
 
   const { data, error } = await supabase.rpc("rag_search", {
