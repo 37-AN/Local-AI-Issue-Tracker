@@ -787,13 +787,36 @@ export default function Home() {
     return [...tickets].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
   }, [tickets]);
 
+  const stats = useMemo(() => {
+    const open = tickets.filter((t: TicketRow) => t.status === "Open").length;
+    const resolved = tickets.filter((t: TicketRow) => t.status === "Resolved" || t.status === "Closed");
+
+    let mttr = "—";
+    if (resolved.length > 0) {
+      const times = resolved.map(t => {
+        if (!t.resolved_at) return null;
+        const start = new Date(t.created_at).getTime();
+        const end = new Date(t.resolved_at).getTime();
+        return end - start;
+      }).filter((v): v is number => v !== null && v > 0);
+
+      if (times.length > 0) {
+        const avgMs = times.reduce((a, b) => a + b, 0) / times.length;
+        const avgHours = avgMs / (1000 * 60 * 60);
+        mttr = avgHours < 1 ? `${(avgHours * 60).toFixed(0)}m` : `${avgHours.toFixed(1)}h`;
+      }
+    }
+
+    return { open, mttr };
+  }, [tickets]);
+
   const visibleSOPs = useMemo(() => {
     const q = sopQuery.trim().toLowerCase();
     if (!q) return sops;
-    return sops.filter((s) => {
+    return sops.filter((s: SOP) => {
       return (
         s.title.toLowerCase().includes(q) ||
-        s.tags.some((tag) => tag.toLowerCase().includes(q))
+        (s.tags && s.tags.some((tag: string) => tag.toLowerCase().includes(q)))
       );
     });
   }, [sops, sopQuery]);
@@ -1025,7 +1048,14 @@ export default function Home() {
       }
 
       const evidence = Array.isArray((json as { evidence?: unknown })?.evidence)
-        ? ((json as { evidence: EvidenceItem[] }).evidence ?? [])
+        ? ((json as { evidence: RagResult[] }).evidence ?? []).map((r: RagResult, idx: number) => ({
+          ref: `E${idx + 1}`,
+          source_type: r.source_type,
+          source_id: r.source_id,
+          title: r.title,
+          score: r.score,
+          content: r.content,
+        }))
         : [];
       const suggestion = (json as { suggestion?: unknown })?.suggestion as
         | AiSuggestion
@@ -1302,18 +1332,17 @@ export default function Home() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={async () => {
-                      try {
-                        await fetch("/api/sync/trigger", { method: "POST" });
-                        alert("Sync triggered!");
-                      } catch {
-                        alert("Sync failed");
-                      }
-                    }}
-                    className="rounded-lg bg-slate-100 p-1.5 text-slate-600 hover:bg-slate-200"
+                    onClick={() => triggerSync("github")}
+                    className={cn(
+                      "rounded-lg p-1.5 transition-colors",
+                      syncStatus.state === "running"
+                        ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    )}
+                    disabled={syncStatus.state === "running"}
                     title="Trigger external sync"
                   >
-                    🔄
+                    {syncStatus.state === "running" ? "⏳" : "🔄"}
                   </button>
                   <button
                     type="button"
@@ -1370,7 +1399,7 @@ export default function Home() {
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {visibleTopics.slice(0, 18).map((topic) => {
+                {visibleTopics.slice(0, 18).map((topic: string) => {
                   const active = selectedTopics.has(topic);
                   return (
                     <button
@@ -1403,13 +1432,13 @@ export default function Home() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                   <StatCard
                     label="Open tickets"
-                    value={tickets.filter((t: TicketRow) => t.status === 'Open').length.toString()}
+                    value={stats.open.toString()}
                     hint="Active incidents & requests"
                   />
                   <StatCard
                     label="MTTR"
-                    value="4.2h"
-                    hint="Requires historical resolution timestamps"
+                    value={stats.mttr}
+                    hint="Average time to resolution"
                   />
                   <StatCard
                     label="AI success rate"
@@ -1457,6 +1486,21 @@ export default function Home() {
                 <Panel
                   title="Observability"
                   subtitle="Prometheus metrics endpoint and optional Grafana dashboard embedding."
+                  right={
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+                      onClick={() => triggerSync("github", "it-issue-tracker")}
+                    >
+                      {syncStatus.state === "running"
+                        ? "Syncing…"
+                        : syncStatus.state === "done"
+                          ? `Synced ${syncStatus.count} items`
+                          : syncStatus.state === "error"
+                            ? `Sync failed: ${syncStatus.message}`
+                            : "Sync GitHub repo"}
+                    </button>
+                  }
                 >
                   <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -1667,7 +1711,7 @@ export default function Home() {
                             </div>
                           ) : (
                             <ul className="divide-y divide-slate-200">
-                              {ragResults.map((r) => (
+                              {ragResults.map((r: RagResult) => (
                                 <li key={r.id} className="p-4">
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
@@ -1806,7 +1850,7 @@ export default function Home() {
                                     Recommended steps
                                   </div>
                                   <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm text-slate-800">
-                                    {aiSuggestResult.recommended_steps.map((s, i) => (
+                                    {aiSuggestResult.recommended_steps.map((s: { step: string; rationale: string; evidence_refs: string[]; }, i: number) => (
                                       <li key={i}>
                                         <div className="font-medium">{s.step}</div>
                                         <div className="mt-1 text-xs text-slate-600">
@@ -1828,7 +1872,7 @@ export default function Home() {
                                       Validation
                                     </div>
                                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-800">
-                                      {aiSuggestResult.validation_steps.map((v, i) => (
+                                      {aiSuggestResult.validation_steps.map((v: string, i: number) => (
                                         <li key={i}>{v}</li>
                                       ))}
                                     </ul>
@@ -1838,7 +1882,7 @@ export default function Home() {
                                       Rollback
                                     </div>
                                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-800">
-                                      {aiSuggestResult.rollback_procedures.map((v, i) => (
+                                      {aiSuggestResult.rollback_procedures.map((v: string, i: number) => (
                                         <li key={i}>{v}</li>
                                       ))}
                                     </ul>
@@ -1851,7 +1895,7 @@ export default function Home() {
                                       Questions (missing evidence)
                                     </div>
                                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-800">
-                                      {aiSuggestResult.questions.map((q, i) => (
+                                      {aiSuggestResult.questions.map((q: string, i: number) => (
                                         <li key={i}>{q}</li>
                                       ))}
                                     </ul>
@@ -1863,7 +1907,7 @@ export default function Home() {
                                     Was this helpful?
                                   </div>
                                   <div className="mt-2 flex items-center gap-2">
-                                    {[1, 2, 3, 4, 5].map((star) => (
+                                    {[1, 2, 3, 4, 5].map((star: number) => (
                                       <button
                                         key={star}
                                         onClick={() => submitRating(star)}
@@ -2847,8 +2891,6 @@ export default function Home() {
                                   onClick={async () => {
                                     if (aiSuggestResult) {
                                       await submitRating(
-                                        selectedTicketId || 'unknown',
-                                        aiSuggestResult,
                                         n,
                                         feedbackNotes,
                                       );
@@ -3066,7 +3108,7 @@ export default function Home() {
                                     >
                                       {s.status}
                                     </Badge>
-                                    {s.tags.slice(0, 3).map((tag) => (
+                                    {s.tags && s.tags.slice(0, 3).map((tag: string) => (
                                       <Badge key={tag} tone="neutral">
                                         {tag}
                                       </Badge>
@@ -3075,7 +3117,7 @@ export default function Home() {
                                 </div>
                                 <div className="text-sm text-slate-700">{s.version}</div>
                                 <div className="text-sm text-slate-700">
-                                  {formatCompactDate(s.updatedAtISO)}
+                                  {formatCompactDate(s.updated_at)}
                                 </div>
                               </div>
                             </li>

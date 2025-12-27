@@ -16,7 +16,7 @@ function normalizeRole(role: string | null | undefined): Role {
 }
 
 export async function getActorContext(
-  supabase: SupabaseClient<Database>
+  supabase: any
 ): Promise<ActorContext> {
   const session = await getSession();
   const userId = session.userId ?? null;
@@ -24,14 +24,18 @@ export async function getActorContext(
 
   if (!userId) return { userId: null, username: null, role: "Viewer" };
 
-  const { data, error } = await supabase
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .maybeSingle();
+  try {
+    const { data, error } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .maybeSingle();
 
-  if (error) return { userId, username, role: "Viewer" };
-  return { userId, username, role: normalizeRole(data?.role ?? null) };
+    if (error) return { userId, username, role: "Viewer" };
+    return { userId, username, role: normalizeRole(data?.role ?? null) };
+  } catch {
+    return { userId, username, role: "Viewer" };
+  }
 }
 
 export function canWrite(role: Role): boolean {
@@ -56,7 +60,7 @@ export function getClientIp(request: Request): string | null {
 }
 
 export async function writeAuditLog(
-  supabase: SupabaseClient<Database>,
+  supabase: any,
   entry: Omit<Tables<"audit_logs">, "id" | "created_at">
 ) {
   try {

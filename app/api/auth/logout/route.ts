@@ -1,19 +1,31 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getActorContext } from "@/lib/rbac";
+import { getActorContext, getClientIp, writeAuditLog } from "@/lib/rbac";
+import { getSession } from "@/lib/session";
 
-// ... existing code ...
 export async function POST(request: Request) {
   const supabase = await createClient();
+  const actor = await getActorContext(supabase);
   const session = await getSession();
 
-  const actorId = session.userId ?? null;
+  const userId = session.userId ?? null;
   const username = session.username ?? null;
 
-  console.log(`[auth.logout] request userId=${actorId ?? "-"} username=${username ?? "-"}`);
+  console.log(`[auth.logout] request userId=${userId ?? "-"} username=${username ?? "-"}`);
+
+  await writeAuditLog(supabase, {
+    actor_id: userId,
+    actor_role: actor.role,
+    action: "auth.logout",
+    entity_type: "session",
+    entity_id: userId,
+    before: null,
+    after: null,
+    ip: getClientIp(request),
+    user_agent: request.headers.get("user-agent"),
+  });
 
   session.destroy();
 
-  // ... existing audit log ...
   return NextResponse.json({ ok: true });
 }

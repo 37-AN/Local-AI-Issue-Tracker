@@ -1,0 +1,53 @@
+# Gemini CLI ignore file
+# Generated from .gitignore and .vscode/easycode.ignore
+
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+vendor/
+package-lock.json
+pnpm-lock.yaml
+
+# Build output & cache
+/build
+/dist
+/out/
+/.next/
+cache/
+*.tsbuildinfo
+
+# Testing
+/coverage
+*.test.*
+*.spec.*
+
+# Logs and debug files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Env files
+.env*
+
+# OS-specific
+.DS_Store
+
+# Misc
+*.pem
+*.min.*
+*.bundle.*
+*.bundle-min.*
+.vercel
+next-env.d.ts
+src/utils/supabase-mock/
+
+# Hidden files and directories
+.*/

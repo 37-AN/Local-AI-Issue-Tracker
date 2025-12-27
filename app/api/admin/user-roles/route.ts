@@ -1,19 +1,46 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getActorContext } from "@/lib/rbac";
+import { canAdmin, deny, getActorContext, getClientIp, writeAuditLog } from "@/lib/rbac";
 
-// ... existing code ...
 export async function POST(request: Request) {
   const supabase = await createClient();
-  const session = await getSession();
+  const actor = await getActorContext(supabase);
 
-  const actorId = session.userId ?? null;
-  const username = session.username ?? null;
+  if (!canAdmin(actor.role)) {
+    return NextResponse.json(deny("Admin role required"), { status: 403 });
+  }
 
-  console.log(`[auth.logout] request userId=${actorId ?? "-"} username=${username ?? "-"}`);
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+  }
 
-  session.destroy();
+  const { userId, role } = body;
+  if (!userId || !role) {
+    return NextResponse.json({ ok: false, error: "userId and role required" }, { status: 400 });
+  }
 
-  // ... existing audit log ...
+  const { error } = await supabase
+    .from("user_roles")
+    .upsert({ user_id: userId, role }, { onConflict: "user_id" });
+
+  if (error) {
+    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  }
+
+  await writeAuditLog(supabase, {
+    actor_id: actor.userId,
+    actor_role: actor.role,
+    action: "admin.set_user_role",
+    entity_type: "user_role",
+    entity_id: userId,
+    before: null, // Could fetch old role if needed
+    after: { role },
+    ip: getClientIp(request),
+    user_agent: request.headers.get("user-agent"),
+  });
+
   return NextResponse.json({ ok: true });
 }

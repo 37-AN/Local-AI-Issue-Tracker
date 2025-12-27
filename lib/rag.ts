@@ -18,36 +18,20 @@ export type RagSearchInput = {
   filterSourceType?: string | null;
 };
 
-function fnv1a32(input: string): number {
-  // 32-bit FNV-1a
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  // Convert to unsigned 32-bit
-  return hash >>> 0;
-}
+export type RagResult = {
+  id: string;
+  source_type: string;
+  source_id: string;
+  chunk_index: number;
+  title: string;
+  content: string;
+  metadata: any;
+  score: number;
+};
 
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/g)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-/**
- * Local-only embedding function. 
- * Currently uses feature hashing (fast, zero-dep), but designed to be 
- * swapped for a local ONNX/Transformers.js model.
- */
 export async function embedTextToVector384(text: string): Promise<number[]> {
   const norm = text.toLowerCase().trim();
   const vector = new Array(384).fill(0);
-
-  // TO IMPROVE: Integrate @xenova/transformers for real semantic embeddings
-  // if Node.js environment allows native addons or WASM.
-  // For now, we use a robust hashing trick to generate a 384-dim vector.
 
   for (let i = 0; i < norm.length; i++) {
     const charCode = norm.charCodeAt(i);
@@ -55,7 +39,6 @@ export async function embedTextToVector384(text: string): Promise<number[]> {
     vector[bucket] += 1;
   }
 
-  // Normalize
   const mag = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0)) || 1;
   return vector.map((v) => v / mag);
 }
@@ -66,8 +49,6 @@ export function vectorToPgVectorString(vec: number[]): string {
       `Embedding must be ${RAG_EMBEDDING_DIM} dims, got ${vec.length}`
     );
   }
-  // pgvector accepts: '[0.1, 0.2, ...]'
-  // Keep short-ish strings.
   const rounded = vec.map((v) => Number(v.toFixed(6)));
   return `[${rounded.join(",")}]`;
 }
@@ -134,7 +115,7 @@ export async function ragUpsert(input: RagUpsertInput): Promise<{
 }
 
 
-export async function ragSearch(input: RagSearchInput) {
+export async function ragSearch(input: RagSearchInput): Promise<RagResult[]> {
   const supabase = await createClient();
 
   const vec = await embedTextToVector384(input.query);
@@ -149,5 +130,16 @@ export async function ragSearch(input: RagSearchInput) {
 
   if (error) throw new Error(error.message);
 
-  return data ?? [];
+  const results = (data as any[]) || [];
+
+  return results.map((row) => ({
+    id: row.id,
+    source_type: row.source_type,
+    source_id: row.source_id,
+    chunk_index: row.chunk_index,
+    title: row.title,
+    content: row.content,
+    metadata: row.metadata,
+    score: row.similarity,
+  }));
 }

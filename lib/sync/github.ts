@@ -10,11 +10,12 @@ export async function syncGitHubIssues(repo: string, token?: string) {
         .insert({
             source: `github:${repo}`,
             status: "running",
+            items_processed: 0,
         })
         .select("*")
         .single();
 
-    if (logError) throw new Error(logError.message);
+    if (logError || !logEntry) throw new Error(logError?.message || "Failed to create sync log");
 
     try {
         const headers: Record<string, string> = {
@@ -34,7 +35,7 @@ export async function syncGitHubIssues(repo: string, token?: string) {
             throw new Error(`GitHub API error: ${errText}`);
         }
 
-        const issues = await res.json();
+        const issues = await res.json() as any[];
         let processedCount = 0;
 
         for (const issue of issues) {
@@ -44,7 +45,7 @@ export async function syncGitHubIssues(repo: string, token?: string) {
             const content = `
 TITLE: ${issue.title}
 BODY: ${issue.body}
-LABELS: ${issue.labels.map((l: any) => l.name).join(", ")}
+LABELS: ${issue.labels.map((l: { name: string }) => l.name).join(", ")}
 STATE: ${issue.state}
 URL: ${issue.html_url}
       `.trim();

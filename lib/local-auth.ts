@@ -19,7 +19,7 @@ function passwordMaterial(password: string, saltBase64: string) {
 }
 
 export async function createLocalUser(params: {
-  supabase: SupabaseClient<Database>;
+  supabase: SupabaseClient<any>;
   username: string;
   password: string;
   role: LocalRole;
@@ -55,7 +55,7 @@ export async function createLocalUser(params: {
 }
 
 export async function verifyLocalLogin(params: {
-  supabase: SupabaseClient<Database>;
+  supabase: SupabaseClient<any>;
   username: string;
   password: string;
 }): Promise<{ userId: string; username: string; role: LocalRole } | null> {
@@ -86,7 +86,7 @@ export async function verifyLocalLogin(params: {
   return { userId: user.id, username: user.username, role: normalizeRole(roleRow?.role) };
 }
 
-export async function countLocalUsers(supabase: SupabaseClient<Database>): Promise<number> {
+export async function countLocalUsers(supabase: SupabaseClient<any>): Promise<number> {
   const { count, error } = await supabase
     .from("local_users")
     .select("id", { count: "exact", head: true });
