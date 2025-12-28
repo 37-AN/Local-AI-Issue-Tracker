@@ -22,8 +22,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "userId and role required" }, { status: 400 });
   }
 
-  const { error } = await supabase
-    .from("user_roles")
+  const { error } = await (supabase.from("user_roles") as any)
     .upsert({ user_id: userId, role }, { onConflict: "user_id" });
 
   if (error) {
@@ -36,7 +35,7 @@ export async function POST(request: Request) {
     action: "admin.set_user_role",
     entity_type: "user_role",
     entity_id: userId,
-    before: null, // Could fetch old role if needed
+    before: null,
     after: { role },
     ip: getClientIp(request),
     user_agent: request.headers.get("user-agent"),

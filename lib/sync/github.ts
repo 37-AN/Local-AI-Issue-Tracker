@@ -5,8 +5,7 @@ export async function syncGitHubIssues(repo: string, token?: string) {
     const supabase = await createClient();
 
     // Track sync start
-    const { data: logEntry, error: logError } = await supabase
-        .from("sync_logs")
+    const { data: logEntry, error: logError } = await (supabase.from("sync_logs") as any)
         .insert({
             source: `github:${repo}`,
             status: "running",
@@ -66,26 +65,24 @@ URL: ${issue.html_url}
         }
 
         // Update log
-        await supabase
-            .from("sync_logs")
+        await (supabase.from("sync_logs") as any)
             .update({
                 status: "completed",
                 items_processed: processedCount,
                 finished_at: new Date().toISOString(),
             })
-            .eq("id", logEntry.id);
+            .eq("id", (logEntry as any).id);
 
         return { processedCount };
     } catch (e) {
         const msg = e instanceof Error ? e.message : "Sync failed";
-        await supabase
-            .from("sync_logs")
+        await (supabase.from("sync_logs") as any)
             .update({
                 status: "failed",
                 error_message: msg,
                 finished_at: new Date().toISOString(),
             })
-            .eq("id", logEntry.id);
+            .eq("id", (logEntry as any).id);
         throw e;
     }
 }

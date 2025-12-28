@@ -14,8 +14,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: "ticketId and rating are required" }, { status: 400 });
         }
 
-        const { data, error } = await supabase
-            .from("ai_recommendation_ratings")
+        const { data, error } = await (supabase.from("ai_recommendation_ratings") as any)
             .insert({
                 ticket_id: ticketId,
                 recommendation_payload: recommendationPayload,

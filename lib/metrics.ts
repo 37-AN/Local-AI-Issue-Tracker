@@ -31,6 +31,9 @@ type MetricsBundle = {
   aiSopDraftRequestsTotal: Counter<"status">;
   aiSopDraftEvidenceItemsTotal: Counter<"status">;
   aiSopDraftDurationSeconds: Histogram<"status">;
+
+  llmTokensTotal: Counter<"model" | "type">;
+  llmLatencySeconds: Histogram<"model" | "status">;
 };
 
 function createMetrics(): MetricsBundle {
@@ -159,6 +162,21 @@ function createMetrics(): MetricsBundle {
     registers: [registry],
   });
 
+  const llmTokensTotal = new Counter({
+    name: "it_tracker_llm_tokens_total",
+    help: "Total LLM tokens consumed",
+    labelNames: ["model", "type"] as const, // prompt or completion
+    registers: [registry],
+  });
+
+  const llmLatencySeconds = new Histogram({
+    name: "it_tracker_llm_latency_seconds",
+    help: "LLM inference latency in seconds",
+    labelNames: ["model", "status"] as const,
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 60],
+    registers: [registry],
+  });
+
   return {
     registry,
     httpRequestsTotal,
@@ -177,6 +195,8 @@ function createMetrics(): MetricsBundle {
     aiSopDraftRequestsTotal,
     aiSopDraftEvidenceItemsTotal,
     aiSopDraftDurationSeconds,
+    llmTokensTotal,
+    llmLatencySeconds,
   };
 }
 

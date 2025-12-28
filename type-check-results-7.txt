@@ -1,0 +1,4 @@
+
+> nextjs-base-starter@0.1.0 type-check /Users/34v3r/Desktop/dev/Local-AI-Issue-Tracker
+> tsc --noEmit
+

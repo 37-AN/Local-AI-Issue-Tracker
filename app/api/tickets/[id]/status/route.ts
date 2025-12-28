@@ -8,9 +8,10 @@ import {
   writeAuditLog,
 } from "@/lib/rbac";
 
-// ... existing code ...
-
-export async function PATCH(request: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(
+  request: Request,
+  ctx: { params: Promise<{ id: string }> }
+) {
   const supabase = await createClient();
   const actor = await getActorContext(supabase);
 
@@ -20,12 +21,35 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
   const { id } = await ctx.params;
 
-  const { data: before } = await supabase.from("tickets").select("*").eq("id", id).maybeSingle();
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+  }
 
-  // ... existing body parsing + updates building ...
+  const { status } = body;
+  if (!status) {
+    return NextResponse.json({ ok: false, error: "Status required" }, { status: 400 });
+  }
 
-  const { data: updated, error } = await supabase
-    .from("tickets")
+  const { data: before } = await (supabase.from("tickets") as any)
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!before) {
+    return NextResponse.json({ ok: false, error: "Ticket not found" }, { status: 404 });
+  }
+
+  const updates: any = { status };
+  if (status === "Resolved") {
+    updates.resolved_at = new Date().toISOString();
+  } else if (status === "Closed") {
+    updates.closed_at = new Date().toISOString();
+  }
+
+  const { data: updated, error } = await (supabase.from("tickets") as any)
     .update(updates)
     .eq("id", id)
     .select("*")
@@ -33,21 +57,21 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-  await supabase.from("ticket_events").insert({
-    ticket_id: updated.id,
+  await (supabase.from("ticket_events") as any).insert({
+    ticket_id: (updated as any).id,
     actor_id: actor.userId,
-    event_type: "updated",
-    payload: { fields: fieldsChanged },
+    event_type: "status_change",
+    payload: { from: (before as any).status, to: status },
   });
 
   await writeAuditLog(supabase, {
     actor_id: actor.userId,
     actor_role: actor.role,
-    action: "tickets.update",
+    action: "tickets.update_status",
     entity_type: "ticket",
-    entity_id: updated.id,
-    before: before ?? null,
-    after: updated,
+    entity_id: (updated as any).id,
+    before: { status: (before as any).status },
+    after: { status: (updated as any).status },
     ip: getClientIp(request),
     user_agent: request.headers.get("user-agent"),
   });

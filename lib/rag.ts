@@ -105,8 +105,7 @@ export async function ragUpsert(input: RagUpsertInput): Promise<{
     })
   );
 
-  const { error } = await supabase
-    .from("rag_items")
+  const { error } = await (supabase.from("rag_items") as any)
     .upsert(rows, { onConflict: "source_type,source_id,chunk_index" });
 
   if (error) throw new Error(error.message);
@@ -122,7 +121,7 @@ export async function ragSearch(input: RagSearchInput): Promise<RagResult[]> {
   const embedding = vectorToPgVectorString(vec);
   const limit = Math.max(1, Math.min(input.limit ?? 8, 50));
 
-  const { data, error } = await supabase.rpc("rag_search", {
+  const { data, error } = await (supabase as any).rpc("rag_search", {
     query_embedding: embedding,
     match_count: limit,
     filter_source_type: input.filterSourceType ?? null,

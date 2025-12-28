@@ -1,0 +1,18 @@
+# Zero-Cloud Environment Variables (LocalAI + Supabase)
+
+# Supabase Configuration
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# LocalAI / Zero-Cloud Inference
+LOCAL_AI_ENDPOINT=http://localhost:8080
+LOCAL_AI_MODEL=gpt-4
+LOCAL_AI_TEMPERATURE=0.2
+LOCAL_AI_MAX_TOKENS=700
+
+# Observability
+PROMETHEUS_METRICS_PORT=9090
+
+# Session
+SESSION_PASSWORD=at-least-32-characters-long-password-here

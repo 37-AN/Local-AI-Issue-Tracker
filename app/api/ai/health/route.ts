@@ -1,28 +1,17 @@
 import { NextResponse } from "next/server";
-
-const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
+import { LocalAIConnector } from "@/lib/ai";
 
 export async function GET() {
-  try {
-    const res = await fetch(`${OLLAMA_HOST}/api/tags`, {
-      method: "GET",
-      headers: { "content-type": "application/json" },
-    });
+  const connector = new LocalAIConnector();
+  const isHealthy = await connector.healthCheck();
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { ok: false, host: OLLAMA_HOST, status: res.status },
-        { status: 200 }
-      );
-    }
+  const endpoint = process.env.LOCAL_AI_ENDPOINT ?? "http://localhost:8080";
+  const model = process.env.LOCAL_AI_MODEL ?? "gpt-4";
 
-    const data: unknown = await res.json();
-    return NextResponse.json({ ok: true, host: OLLAMA_HOST, tags: data });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unreachable";
-    return NextResponse.json(
-      { ok: false, host: OLLAMA_HOST, error: msg },
-      { status: 200 }
-    );
-  }
+  return NextResponse.json({
+    ok: isHealthy,
+    host: endpoint,
+    model: model,
+    status: isHealthy ? "Online" : "Offline",
+  });
 }

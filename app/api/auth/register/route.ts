@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/admin";
 import { createLocalUser, countLocalUsers } from "@/lib/local-auth";
 import { canAdmin, deny, getActorContext, getClientIp, writeAuditLog } from "@/lib/rbac";
 

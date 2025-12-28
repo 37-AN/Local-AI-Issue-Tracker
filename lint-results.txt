@@ -1,0 +1,9 @@
+
+> nextjs-base-starter@0.1.0 lint /Users/34v3r/Desktop/dev/Local-AI-Issue-Tracker
+> oxlint
+
+Failed to parse oxlint configuration file.
+
+  x Failed to parse config with error Error("unknown field `parser`, expected one of `$schema`, `plugins`, `jsPlugins`, `categories`, `rules`, `settings`, `env`, `globals`, `overrides`, `ignorePatterns`, `extends`", line: 0, column: 0)
+
+ ELIFECYCLE  Command failed with exit code 1.

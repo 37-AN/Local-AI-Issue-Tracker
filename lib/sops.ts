@@ -17,8 +17,7 @@ export async function createSop(input: SopInput) {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    const { data, error } = await supabase
-        .from("sops")
+    const { data, error } = await (supabase.from("sops") as any)
         .insert({
             title: input.title,
             problem_description: input.problem_description,
@@ -41,7 +40,7 @@ export async function createSop(input: SopInput) {
 
 export async function listSops(params: { tags?: string[]; query?: string }) {
     const supabase = await createClient();
-    let query = supabase.from("sops").select("*").order("updated_at", { ascending: false });
+    let query = (supabase.from("sops") as any).select("*").order("updated_at", { ascending: false });
 
     if (params.query) {
         query = query.or(`title.ilike.%${params.query}%,problem_description.ilike.%${params.query}%`);
@@ -58,8 +57,7 @@ export async function listSops(params: { tags?: string[]; query?: string }) {
 
 export async function getSopById(id: string) {
     const supabase = await createClient();
-    const { data, error } = await supabase
-        .from("sops")
+    const { data, error } = await (supabase.from("sops") as any)
         .select("*")
         .eq("id", id)
         .single();
@@ -70,8 +68,7 @@ export async function getSopById(id: string) {
 
 export async function updateSop(id: string, updates: Partial<SopInput>) {
     const supabase = await createClient();
-    const { data, error } = await supabase
-        .from("sops")
+    const { data, error } = await (supabase.from("sops") as any)
         .update(updates)
         .eq("id", id)
         .select("*")

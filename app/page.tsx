@@ -2,15 +2,27 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import type { Tables } from "@/database.types";
+import {
+  authApi,
+  ticketApi,
+  sopApi,
+  adminApi,
+  ragApi,
+  aiApi,
+  syncApi,
+  logApi,
+  TicketRow,
+  TicketEventRow,
+  AiSuggestion,
+  SopDraft,
+  TicketStatus
+} from "@/lib/api-client";
 
 type NavKey = "dashboard" | "tickets" | "sops";
 
-type TicketStatus = "Open" | "In Progress" | "Resolved" | "Closed";
 type TicketType = "Incident" | "Service Request" | "Problem" | "Change";
 type TicketPriority = "P1" | "P2" | "P3" | "P4";
 
-type TicketRow = Tables<"tickets">;
-type TicketEventRow = Tables<"ticket_events">;
 
 // Use the database.types Tables where possible, or keep local types for UI
 type SOP = Tables<"sops">;
@@ -35,37 +47,6 @@ type EvidenceItem = {
   content: string;
 };
 
-type AiSuggestion =
-  | {
-    summary: string;
-    confidence_overall: number;
-    root_causes: Array<{
-      cause: string;
-      confidence: number;
-      evidence_refs: string[];
-    }>;
-    recommended_steps: Array<{
-      step: string;
-      rationale: string;
-      evidence_refs: string[];
-    }>;
-    validation_steps: string[];
-    rollback_procedures: string[];
-    questions: string[];
-  }
-  | { raw: string };
-
-type SopDraft =
-  | {
-    problem_description: string;
-    symptoms: string[];
-    root_cause: string;
-    resolution_steps: string[];
-    validation_steps: string[];
-    rollback_procedures: string[];
-    references: string[];
-  }
-  | { raw: string };
 
 type Role = "Admin" | "Engineer" | "Viewer";
 type AdminUserRow = { id: string; username: string; created_at: string; role: string };
@@ -76,20 +57,7 @@ function isRaw(v: AiSuggestion | SopDraft): v is { raw: string } {
 }
 
 function sendClientLog(level: ClientLogLevel, message: string, context?: unknown) {
-  try {
-    const payload = { level, message, context, ts: new Date().toISOString() };
-
-    // Avoid sendBeacon here: it commonly triggers ECONNRESET server noise on reload/HMR.
-    void fetch("/api/client-log", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-      // don't keepalive; we prefer the request to be cancelled cleanly on refresh
-      keepalive: false,
-    }).catch(() => null);
-  } catch {
-    // ignore
-  }
+  void logApi.send(level, message, context);
 }
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -222,20 +190,11 @@ export default function Home() {
   async function loadSops() {
     setSopsStatus({ state: "loading" });
     try {
-      const params = new URLSearchParams();
-      if (sopQuery.trim()) params.set("q", sopQuery.trim());
-      const res = await fetch(`/api/sops?${params.toString()}`, { method: "GET" });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg = (json as { error?: string })?.error || "Failed to load SOPs";
-        setSopsStatus({ state: "error", message: msg });
-        return;
-      }
-      setSops((json as { sops: SOP[] }).sops || []);
+      const data = await sopApi.list({ query: sopQuery.trim() });
+      setSops(data.sops);
       setSopsStatus({ state: "loaded" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load SOPs";
-      setSopsStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setSopsStatus({ state: "error", message: err.message });
     }
   }
 
@@ -253,20 +212,11 @@ export default function Home() {
   async function triggerSync(source: string, repo?: string) {
     setSyncStatus({ state: "running" });
     try {
-      const res = await fetch("/api/sync/trigger", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source, repo }),
-      });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        setSyncStatus({ state: "error", message: (json as { error?: string })?.error || "Sync failed" });
-        return;
-      }
-      setSyncStatus({ state: "done", count: (json as { processedCount: number }).processedCount });
+      const data = await syncApi.trigger(source, repo);
+      setSyncStatus({ state: "done", count: data.processedCount || 0 });
       setTimeout(() => setSyncStatus({ state: "idle" }), 3000);
-    } catch (e) {
-      setSyncStatus({ state: "error", message: e instanceof Error ? e.message : "Sync failed" });
+    } catch (err: any) {
+      setSyncStatus({ state: "error", message: err.message });
     }
   }
 
@@ -414,22 +364,10 @@ export default function Home() {
 
   async function refreshMe() {
     try {
-      const res = await fetch("/api/auth/me", { method: "GET" });
-      const json: unknown = await res.json();
-      const roleRaw = (json as { role?: unknown })?.role;
+      const data = await authApi.getMe();
+      const roleRaw = data.user?.role;
       const role: Role = roleRaw === "Admin" || roleRaw === "Engineer" || roleRaw === "Viewer" ? roleRaw : "Viewer";
-
-      const userId =
-        typeof (json as { userId?: unknown })?.userId === "string"
-          ? (json as { userId: string }).userId
-          : null;
-
-      const username =
-        typeof (json as { username?: unknown })?.username === "string"
-          ? (json as { username: string }).username
-          : null;
-
-      setMe({ role, userId, username });
+      setMe({ role, userId: data.user?.id || null, username: data.user?.username || null });
     } catch {
       setMe({ role: "Viewer", userId: null, username: null });
     }
@@ -442,35 +380,19 @@ export default function Home() {
   async function loginOrRegister() {
     setAuthStatus({ state: "working" });
     try {
-      const url = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(authForm),
-      });
-
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Auth failed";
-        setAuthStatus({ state: "error", message: msg });
-        return;
-      }
-
+      const action = authMode === "login" ? authApi.login : authApi.register;
+      await action(authForm.username, authForm.password);
       setAuthStatus({ state: "idle" });
       setAuthOpen(false);
       setAuthForm({ username: "", password: "" });
       await refreshMe();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Auth failed";
-      setAuthStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setAuthStatus({ state: "error", message: err.message });
     }
   }
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+    await authApi.logout();
     await refreshMe();
   }
 
@@ -496,72 +418,34 @@ export default function Home() {
   async function loadAdminUsers() {
     setAdminUsersStatus({ state: "loading" });
     try {
-      const res = await fetch("/api/admin/users", { method: "GET" });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to load users";
-        setAdminUsersStatus({ state: "error", message: msg });
-        return;
-      }
-      const users = Array.isArray((json as { users?: unknown })?.users)
-        ? ((json as { users: AdminUserRow[] }).users ?? [])
-        : [];
-      setAdminUsers(users);
+      const data = await adminApi.listUsers();
+      setAdminUsers(data.users);
       setAdminUsersStatus({ state: "idle" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load users";
-      setAdminUsersStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setAdminUsersStatus({ state: "error", message: err.message });
     }
   }
 
   async function createAdminUser() {
     setNewUserStatus({ state: "creating" });
     try {
-      const res = await fetch("/api/admin/users", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(newUser),
-      });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to create user";
-        setNewUserStatus({ state: "error", message: msg });
-        return;
-      }
+      await adminApi.createUser(newUser);
       setNewUserStatus({ state: "idle" });
       setNewUser({ username: "", password: "", role: "Viewer" });
       await loadAdminUsers();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to create user";
-      setNewUserStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setNewUserStatus({ state: "error", message: err.message });
     }
   }
 
-  async function setUserRole(userId: string, role: Role) {
-    const res = await fetch("/api/admin/user-roles", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ userId, role }),
-    });
-
-    if (!res.ok) {
-      const json: unknown = await res.json().catch(() => ({}));
-      const msg =
-        typeof (json as { error?: unknown })?.error === "string"
-          ? (json as { error: string }).error
-          : "Failed to set role";
-      alert(msg);
-      return;
+  async function setUserRole(userId: string, role: string) {
+    try {
+      await adminApi.updateUserRole(userId, role);
+      await loadAdminUsers();
+      await refreshMe();
+    } catch (err: any) {
+      alert(err.message);
     }
-
-    await loadAdminUsers();
-    await refreshMe();
   }
 
   useEffect(() => {
@@ -573,110 +457,55 @@ export default function Home() {
 
   async function loadTickets() {
     setTicketsStatus({ state: "loading" });
-
-    const topicsParam =
-      selectedTopics.size > 0 ? Array.from(selectedTopics).join(",") : "";
-
-    const params = new URLSearchParams();
-    if (ticketStatus !== "All") params.set("status", ticketStatus);
-    if (ticketQuery.trim()) params.set("q", ticketQuery.trim());
-    if (topicsParam) params.set("topics", topicsParam);
-
     try {
-      const res = await fetch(`/api/tickets?${params.toString()}`, { method: "GET" });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to load tickets";
-        setTicketsStatus({ state: "error", message: msg });
-        return;
+      const data = await ticketApi.list({
+        status: ticketStatus,
+        q: ticketQuery,
+        topics: selectedTopics.size > 0 ? Array.from(selectedTopics).join(",") : ""
+      });
+      setTickets(data.tickets);
+      setTicketsStatus({ state: "idle" });
+      if (data.tickets.length > 0 && !selectedTicketId) {
+        setSelectedTicketId(data.tickets[0]!.id);
       }
-
-      const data = Array.isArray((json as { tickets?: unknown })?.tickets)
-        ? ((json as { tickets: TicketRow[] }).tickets ?? [])
-        : [];
-      setTickets(data);
-      setTicketsStatus({ state: "loaded" });
-
-      if (data.length > 0 && !selectedTicketId) {
-        setSelectedTicketId(data[0]!.id);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load tickets";
-      setTicketsStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setTicketsStatus({ state: "error", message: err.message });
     }
   }
 
   async function loadEvents(ticketId: string) {
     setEventsStatus({ state: "loading" });
     setTicketEvents([]);
-
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/events`, { method: "GET" });
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to load events";
-        setEventsStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const data = Array.isArray((json as { events?: unknown })?.events)
-        ? ((json as { events: TicketEventRow[] }).events ?? [])
-        : [];
-      setTicketEvents(data);
+      const data = await ticketApi.getEvents(ticketId);
+      setTicketEvents(data.events);
       setEventsStatus({ state: "loaded" });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to load events";
-      setEventsStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setEventsStatus({ state: "error", message: err.message });
     }
   }
 
   async function createTicket() {
     setCreateStatus({ state: "creating" });
     try {
-      const res = await fetch("/api/tickets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          externalId: createForm.externalId || undefined,
-          title: createForm.title,
-          description: createForm.description,
-          type: createForm.type,
-          priority: createForm.priority,
-          service: createForm.service || undefined,
-          site: createForm.site || undefined,
-          topics: Array.from(selectedTopics),
-        }),
+      const data = await ticketApi.create({
+        external_id: createForm.externalId || undefined,
+        title: createForm.title,
+        description: createForm.description,
+        type: createForm.type,
+        priority: createForm.priority,
+        service: createForm.service || undefined,
+        site: createForm.site || undefined,
+        topics: Array.from(selectedTopics),
       });
 
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to create ticket";
-        setCreateStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const ticket = (json as { ticket?: unknown })?.ticket as TicketRow | undefined;
-      if (ticket) {
-        setCreateStatus({ state: "created" });
-        setCreateOpen(false);
-        setCreateForm((p) => ({ ...p, title: "", description: "", externalId: "" }));
-        await loadTickets();
-        setSelectedTicketId(ticket.id);
-      } else {
-        setCreateStatus({ state: "error", message: "Ticket not returned" });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to create ticket";
-      setCreateStatus({ state: "error", message: msg });
+      setCreateStatus({ state: "created" });
+      setCreateOpen(false);
+      setCreateForm({ title: "", description: "", externalId: "", type: "Incident", priority: "P3", service: "", site: "" });
+      void loadTickets();
+      setSelectedTicketId(data.ticket.id);
+    } catch (err: any) {
+      setCreateStatus({ state: "error", message: err.message });
     }
   }
 
@@ -685,72 +514,36 @@ export default function Home() {
     setSaveStatus({ state: "saving" });
 
     try {
-      const res = await fetch(`/api/tickets/${ticketId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: editTicket.title,
-          description: editTicket.description,
-          resolutionNotes: editTicket.resolutionNotes,
-          type: editTicket.type,
-          priority: editTicket.priority,
-          service: editTicket.service,
-          site: editTicket.site,
-          topics: Array.from(selectedTopics),
-        }),
+      const data = await ticketApi.update(ticketId, {
+        title: editTicket.title,
+        description: editTicket.description,
+        resolution_notes: editTicket.resolutionNotes,
+        type: editTicket.type,
+        priority: editTicket.priority,
+        service: editTicket.service || undefined,
+        site: editTicket.site || undefined,
+        topics: Array.from(selectedTopics),
       });
 
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to save ticket";
-        setSaveStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const ticket = (json as { ticket?: unknown })?.ticket as TicketRow | undefined;
-      if (ticket) {
-        setSaveStatus({ state: "saved" });
-        setTickets((prev) => prev.map((t) => (t.id === ticket.id ? ticket : t)));
-        await loadEvents(ticket.id);
-        setTimeout(() => setSaveStatus({ state: "idle" }), 1200);
-      } else {
-        setSaveStatus({ state: "error", message: "Ticket not returned" });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to save ticket";
-      setSaveStatus({ state: "error", message: msg });
+      setSaveStatus({ state: "saved" });
+      setTickets((prev) => prev.map((t) => (t.id === data.ticket.id ? data.ticket : t)));
+      void loadEvents(data.ticket.id);
+      setTimeout(() => {
+        setSaveStatus({ state: "idle" });
+        setEditTicket(null);
+      }, 1200);
+    } catch (err: any) {
+      setSaveStatus({ state: "error", message: err.message });
     }
   }
 
-  async function updateTicketStatus2(ticketId: string, status: TicketStatus) {
+  async function updateTicketStatus(ticketId: string, status: TicketStatus) {
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/status`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to update status";
-        alert(msg);
-        return;
-      }
-
-      const ticket = (json as { ticket?: unknown })?.ticket as TicketRow | undefined;
-      if (ticket) {
-        setTickets((prev) => prev.map((t) => (t.id === ticket.id ? ticket : t)));
-        await loadEvents(ticket.id);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to update status";
-      alert(msg);
+      const data = await ticketApi.updateStatus(ticketId, status);
+      setTickets((prev) => prev.map((t) => (t.id === data.ticket.id ? data.ticket : t)));
+      await loadEvents(data.ticket.id);
+    } catch (err: any) {
+      alert(err.message);
     }
   }
 
@@ -901,37 +694,16 @@ export default function Home() {
   async function storeRagItem() {
     setRagAddStatus({ state: "saving" });
     try {
-      const res = await fetch("/api/rag/upsert", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sourceType: ragAdd.sourceType,
-          sourceId: ragAdd.sourceId,
-          title: ragAdd.title,
-          content: ragAdd.content,
-          metadata: { topics: Array.from(selectedTopics) },
-        }),
+      const data = await ragApi.upsert({
+        sourceType: ragAdd.sourceType,
+        sourceId: ragAdd.sourceId,
+        title: ragAdd.title,
+        content: ragAdd.content,
+        metadata: { topics: Array.from(selectedTopics) },
       });
-
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Failed to store item";
-        setRagAddStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const chunksUpserted =
-        typeof (json as { chunksUpserted?: unknown })?.chunksUpserted === "number"
-          ? (json as { chunksUpserted: number }).chunksUpserted
-          : 0;
-
-      setRagAddStatus({ state: "saved", chunksUpserted });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to store item";
-      setRagAddStatus({ state: "error", message: msg });
+      setRagAddStatus({ state: "saved", chunksUpserted: data.chunksUpserted });
+    } catch (err: any) {
+      setRagAddStatus({ state: "error", message: err.message });
     }
   }
 
@@ -939,36 +711,16 @@ export default function Home() {
     setRagSearchStatus({ state: "searching" });
     setRagResults([]);
     try {
-      const res = await fetch("/api/rag/search", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          query: ragQuery,
-          limit: 8,
-          filterSourceType:
-            ragFilterSourceType === "all" ? null : ragFilterSourceType,
-        }),
+      const data = await ragApi.search({
+        query: ragQuery,
+        limit: 8,
+        filterSourceType:
+          ragFilterSourceType === "all" ? null : ragFilterSourceType,
       });
-
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Search failed";
-        setRagSearchStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const results = Array.isArray((json as { results?: unknown })?.results)
-        ? ((json as { results: RagResult[] }).results ?? [])
-        : [];
-
-      setRagResults(results);
+      setRagResults(data.results);
       setRagSearchStatus({ state: "done" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Search failed";
-      setRagSearchStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setRagSearchStatus({ state: "error", message: err.message });
     }
   }
 
@@ -976,46 +728,23 @@ export default function Home() {
     setDupStatus({ state: "checking" });
     setDupResults([]);
     try {
-      const res = await fetch("/api/rag/similar-tickets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: dupTitle, description: dupDesc, limit: 8 }),
+      const data = await ragApi.findSimilarTickets({
+        title: dupTitle,
+        description: dupDesc,
+        limit: 8,
       });
-
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "Duplicate check failed";
-        setDupStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const results = Array.isArray((json as { results?: unknown })?.results)
-        ? ((json as { results: RagResult[] }).results ?? [])
-        : [];
-
-      setDupResults(results);
+      setDupResults(data.results);
       setDupStatus({ state: "done" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Duplicate check failed";
-      setDupStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setDupStatus({ state: "error", message: err.message });
     }
   }
 
   async function checkAiHealth() {
     setAiHealth({ state: "checking" });
     try {
-      const res = await fetch("/api/ai/health", { method: "GET" });
-      const json: unknown = await res.json();
-      const ok = Boolean((json as { ok?: unknown })?.ok);
-      const host =
-        typeof (json as { host?: unknown })?.host === "string"
-          ? (json as { host: string }).host
-          : "unknown";
-
-      setAiHealth(ok ? { state: "ok", host } : { state: "down", host });
+      const data = await aiApi.getHealth();
+      setAiHealth(data.ok ? { state: "ok", host: data.host } : { state: "down", host: data.host });
     } catch {
       setAiHealth({ state: "down", host: "unknown" });
     }
@@ -1027,70 +756,43 @@ export default function Home() {
     setAiSuggestResult(null);
 
     try {
-      const res = await fetch("/api/ai/suggest", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: aiTitle,
-          description: aiDescription,
-          topics: Array.from(selectedTopics),
-        }),
+      const data = await aiApi.suggest({
+        title: aiTitle,
+        description: aiDescription,
+        topics: Array.from(selectedTopics),
       });
 
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "AI request failed";
-        setAiSuggestStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const evidence = Array.isArray((json as { evidence?: unknown })?.evidence)
-        ? ((json as { evidence: RagResult[] }).evidence ?? []).map((r: RagResult, idx: number) => ({
-          ref: `E${idx + 1}`,
-          source_type: r.source_type,
-          source_id: r.source_id,
-          title: r.title,
-          score: r.score,
-          content: r.content,
-        }))
-        : [];
-      const suggestion = (json as { suggestion?: unknown })?.suggestion as
-        | AiSuggestion
-        | undefined;
+      const evidence = data.evidence.map((r: any, idx: number) => ({
+        ref: `E${idx + 1}`,
+        source_type: r.source_type,
+        source_id: r.source_id,
+        title: r.title,
+        score: r.score,
+        content: r.content,
+      }));
 
       setAiSuggestEvidence(evidence);
-      setAiSuggestResult(suggestion ?? { raw: "" });
-      setAiSuggestModel((json as { model: { host: string; name: string } }).model);
+      setAiSuggestResult(data.suggestion);
+      setAiSuggestModel(data.model);
       setAiSuggestStatus({ state: "done" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "AI request failed";
-      setAiSuggestStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setAiSuggestStatus({ state: "error", message: err.message });
     }
   }
 
   async function submitRating(rating: number, feedback?: string) {
     if (!selectedTicketId || !aiSuggestResult) return;
     try {
-      const res = await fetch("/api/ai/ratings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ticketId: selectedTicketId,
-          recommendationPayload: aiSuggestResult,
-          rating,
-          feedback,
-          modelInfo: aiSuggestModel,
-          actorId: me?.userId,
-        }),
+      await aiApi.submitRating({
+        ticketId: selectedTicketId,
+        recommendationPayload: aiSuggestResult,
+        rating,
+        feedback,
+        modelInfo: aiSuggestModel,
       });
-      if (res.ok) {
-        alert("Thanks for the feedback!");
-      }
-    } catch (e) {
-      console.error("Failed to submit rating", e);
+      alert("Thanks for the feedback!");
+    } catch (err: any) {
+      console.error("Failed to submit rating", err.message);
     }
   }
 
@@ -1100,40 +802,27 @@ export default function Home() {
     setSopDraft(null);
 
     try {
-      const res = await fetch("/api/ai/sop-draft", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ticketTitle: aiTitle,
-          ticketDescription: aiDescription,
-          resolutionNotes: sopResolutionNotes,
-          validationNotes: sopValidationNotes,
-          rollbackNotes: sopRollbackNotes,
-          topics: Array.from(selectedTopics),
-        }),
+      const data = await aiApi.getSopDraft({
+        ticketTitle: aiTitle,
+        ticketDescription: aiDescription,
+        resolutionNotes: sopResolutionNotes,
+        topics: Array.from(selectedTopics),
       });
 
-      const json: unknown = await res.json();
-      if (!res.ok) {
-        const msg =
-          typeof (json as { error?: unknown })?.error === "string"
-            ? (json as { error: string }).error
-            : "SOP draft request failed";
-        setSopStatus({ state: "error", message: msg });
-        return;
-      }
-
-      const evidence = Array.isArray((json as { evidence?: unknown })?.evidence)
-        ? ((json as { evidence: EvidenceItem[] }).evidence ?? [])
-        : [];
-      const sop = (json as { sop?: unknown })?.sop as SopDraft | undefined;
+      const evidence = data.evidence.map((r: any, idx: number) => ({
+        ref: `E${idx + 1}`,
+        source_type: r.source_type,
+        source_id: r.source_id,
+        title: r.title,
+        score: r.score,
+        content: r.content,
+      }));
 
       setSopEvidence(evidence);
-      setSopDraft(sop ?? { raw: "" });
+      setSopDraft(data.sop);
       setSopStatus({ state: "done" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "SOP draft request failed";
-      setSopStatus({ state: "error", message: msg });
+    } catch (err: any) {
+      setSopStatus({ state: "error", message: err.message });
     }
   }
 
@@ -2756,7 +2445,7 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
-                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "In Progress")}
+                                  onClick={() => void updateTicketStatus(selectedTicket.id, "In Progress")}
                                   disabled={!canWrite}
                                 >
                                   Set In Progress
@@ -2765,7 +2454,7 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800"
-                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "Resolved")}
+                                  onClick={() => void updateTicketStatus(selectedTicket.id, "Resolved")}
                                   disabled={!canWrite}
                                 >
                                   Resolve (stores to RAG)
@@ -2774,7 +2463,7 @@ export default function Home() {
                                 <button
                                   type="button"
                                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
-                                  onClick={() => void updateTicketStatus2(selectedTicket.id, "Closed")}
+                                  onClick={() => void updateTicketStatus(selectedTicket.id, "Closed")}
                                   disabled={!canWrite}
                                 >
                                   Close

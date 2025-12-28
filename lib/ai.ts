@@ -1,8 +1,8 @@
 import { ragSearch } from "@/lib/rag";
+import { metrics } from "@/lib/metrics";
 
-type OllamaChatResponse = {
-  message?: { content?: string };
-};
+const LOCAL_AI_ENDPOINT = process.env.LOCAL_AI_ENDPOINT ?? "http://localhost:8080";
+const LOCAL_AI_MODEL = process.env.LOCAL_AI_MODEL ?? "gpt-4";
 
 export type EvidenceItem = {
   ref: string; // e.g. "E1"
@@ -56,8 +56,124 @@ export type SopDraft = {
   references: string[]; // evidence refs
 };
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "phi3:mini";
+/**
+ * LocalAIConnector provides a standardized, OpenAI-compatible interface
+ * for interacting with local inference servers like LocalAI.
+ */
+export class LocalAIConnector {
+  private endpoint: string;
+  private model: string;
+
+  constructor(endpoint: string = LOCAL_AI_ENDPOINT, model: string = LOCAL_AI_MODEL) {
+    this.endpoint = endpoint;
+    this.model = model;
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.endpoint}/v1/models`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async chatCompletion(args: {
+    system: string;
+    user: string;
+    temperature?: number;
+    maxTokens?: number;
+    json?: boolean;
+  }): Promise<any> {
+    let lastError: Error | null = null;
+    const maxRetries = 3;
+    const timeoutMs = 30_000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const start = process.hrtime.bigint();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const payload: any = {
+          model: this.model,
+          messages: [
+            { role: "system", content: args.system },
+            { role: "user", content: args.user },
+          ],
+          temperature: args.temperature ?? 0.2,
+          max_tokens: args.maxTokens ?? 1000,
+        };
+
+        if (args.json) {
+          payload.response_format = { type: "json_object" };
+        }
+
+        const res = await fetch(`${this.endpoint}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`LocalAI Error (${res.status}): ${text}`);
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content ?? "";
+
+        const duration = Number(process.hrtime.bigint() - start) / 1e9;
+        metrics().llmLatencySeconds?.observe({ model: this.model, status: "success" }, duration);
+
+        // Instrument token usage
+        if (data.usage) {
+          metrics().llmTokensTotal?.inc(
+            { model: this.model, type: "prompt" },
+            data.usage.prompt_tokens ?? 0
+          );
+          metrics().llmTokensTotal?.inc(
+            { model: this.model, type: "completion" },
+            data.usage.completion_tokens ?? 0
+          );
+        }
+
+        if (args.json) {
+          try {
+            return JSON.parse(content);
+          } catch {
+            return { raw: content };
+          }
+        }
+        return content;
+      } catch (err: any) {
+        lastError = err;
+        const duration = Number(process.hrtime.bigint() - start) / 1e9;
+        metrics().llmLatencySeconds?.observe({ model: this.model, status: "error" }, duration);
+
+        if (err.name === "AbortError") {
+          console.warn(`LocalAI timeout on attempt ${attempt}`);
+        } else {
+          console.error(`LocalAI error on attempt ${attempt}:`, err.message);
+        }
+        // Wait briefly before retry
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    throw lastError || new Error("LocalAI request failed after retries");
+  }
+}
+
+const connector = new LocalAIConnector();
 
 function buildEvidenceBlock(evidence: EvidenceItem[]) {
   return evidence
@@ -68,57 +184,6 @@ function buildEvidenceBlock(evidence: EvidenceItem[]) {
       return `${header}\n${e.content}`;
     })
     .join("\n\n---\n\n");
-}
-
-async function ollamaChatJson(args: {
-  system: string;
-  user: string;
-  temperature?: number;
-  numPredict?: number;
-}): Promise<unknown> {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 20_000);
-
-  try {
-    const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        stream: false,
-        format: "json",
-        messages: [
-          { role: "system", content: args.system },
-          { role: "user", content: args.user },
-        ],
-        options: {
-          temperature: args.temperature ?? 0.2,
-          num_predict: args.numPredict ?? 700,
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(
-        `Ollama error (${res.status}): ${text || res.statusText}`
-      );
-    }
-
-    const data = (await res.json()) as OllamaChatResponse;
-    const content = data.message?.content ?? "";
-    if (!content.trim()) throw new Error("Ollama returned empty content");
-
-    try {
-      return JSON.parse(content) as unknown;
-    } catch {
-      // If the model didn't comply with JSON formatting, return raw string.
-      return { raw: content };
-    }
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 export async function retrieveEvidence(params: {
@@ -167,7 +232,7 @@ export async function aiSuggest(input: AiSuggestInput): Promise<{
           "Add relevant prior resolutions/SOPs to RAG memory, or provide more context (exact errors, impacted hosts, time window, recent changes).",
         ],
       },
-      model: { host: OLLAMA_HOST, name: OLLAMA_MODEL },
+      model: { host: LOCAL_AI_ENDPOINT, name: LOCAL_AI_MODEL },
     };
   }
 
@@ -209,17 +274,18 @@ export async function aiSuggest(input: AiSuggestInput): Promise<{
     .filter(Boolean)
     .join("\n");
 
-  const suggestion = (await ollamaChatJson({
+  const suggestion = (await connector.chatCompletion({
     system,
     user,
     temperature: 0.15,
-    numPredict: 700,
+    maxTokens: 700,
+    json: true,
   })) as AiSuggestion | { raw: string };
 
   return {
     evidence,
     suggestion,
-    model: { host: OLLAMA_HOST, name: OLLAMA_MODEL },
+    model: { host: LOCAL_AI_ENDPOINT, name: LOCAL_AI_MODEL },
   };
 }
 
@@ -252,7 +318,7 @@ export async function aiSopDraft(input: SopDraftInput): Promise<{
         rollback_procedures: [],
         references: [],
       },
-      model: { host: OLLAMA_HOST, name: OLLAMA_MODEL },
+      model: { host: LOCAL_AI_ENDPOINT, name: LOCAL_AI_MODEL },
     };
   }
 
@@ -299,12 +365,13 @@ export async function aiSopDraft(input: SopDraftInput): Promise<{
     "- references must be evidence refs used (E1..En).",
   ].join("\n");
 
-  const sop = (await ollamaChatJson({
+  const sop = (await connector.chatCompletion({
     system,
     user,
     temperature: 0.1,
-    numPredict: 900,
+    maxTokens: 900,
+    json: true,
   })) as SopDraft | { raw: string };
 
-  return { evidence, sop, model: { host: OLLAMA_HOST, name: OLLAMA_MODEL } };
+  return { evidence, sop, model: { host: LOCAL_AI_ENDPOINT, name: LOCAL_AI_MODEL } };
 }
